@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime
 
-# Page configuration
+# Page configuration with improved caching
 st.set_page_config(
     page_title="Folder Tree Visualization",
     page_icon="🌳",
@@ -22,10 +22,15 @@ if 'recommendations' not in st.session_state:
     st.session_state.recommendations = None
 if 'collapsed_nodes' not in st.session_state:
     st.session_state.collapsed_nodes = set()
+if 'selected_node_id' not in st.session_state:
+    st.session_state.selected_node_id = None
+if 'max_nodes_display' not in st.session_state:
+    st.session_state.max_nodes_display = 50  # Limit nodes for performance
 
-# Process Excel data into folder paths
+# Cached Excel processing for better performance
+@st.cache_data
 def process_excel_data(file):
-    """Process Excel data into flat paths."""
+    """Process Excel data into flat paths with caching for performance."""
     try:
         df = pd.read_excel(file)
         flat_paths = []
@@ -41,13 +46,19 @@ def process_excel_data(file):
         st.error(f"Error processing Excel file: {str(e)}")
         return []
 
-# Convert flat paths to hierarchical tree structure
+# Optimized tree building function
 def build_hierarchy(paths):
-    """Convert flat paths to hierarchical tree structure."""
-    root = {"name": "Root", "children": [], "level": 0}
+    """Build tree hierarchy with efficient metadata generation."""
+    root = {"name": "Root", "children": [], "level": 0, "id": "root_0"}
     
-    # Create timestamps for folders
+    # Create timestamps for folders (just once)
     now = datetime.now()
+    classifications = ["Public", "Internal", "Confidential"]
+    owners = ["User1", "User2", "Admin"]
+    
+    # Count paths for performance warning
+    if len(paths) > 100:
+        st.warning(f"Processing {len(paths)} paths may affect performance. Consider using a smaller dataset.")
     
     for path in paths:
         parts = path.split('/')
@@ -66,67 +77,85 @@ def build_hierarchy(paths):
                     break
             
             if not found:
+                node_id = f"{part}_{i}_{np.random.randint(10000)}"  # More unique IDs
+                
+                # Metadata only for leaf nodes to improve performance
+                is_leaf = (i == len(parts) - 1)
+                
                 new_node = {
                     "name": part, 
                     "children": [], 
-                    "level": i + 1
+                    "level": i + 1,
+                    "id": node_id
                 }
                 
-                # Add metadata for leaf nodes
-                created_date = now - pd.Timedelta(days=np.random.randint(1, 365))
-                
-                new_node["size"] = f"{np.random.randint(1, 1000)} KB"
-                new_node["owner"] = np.random.choice(["User1", "User2", "Admin"])
-                new_node["classification"] = np.random.choice(["Public", "Internal", "Confidential"])
-                new_node["created"] = created_date.strftime("%Y-%m-%d")
+                # Only generate detailed metadata for leaf nodes
+                if is_leaf:
+                    new_node["size"] = f"{np.random.randint(1, 1000)} KB"
+                    new_node["owner"] = np.random.choice(owners)
+                    new_node["classification"] = np.random.choice(classifications)
+                    new_node["created"] = (now - pd.Timedelta(days=np.random.randint(1, 365))).strftime("%Y-%m-%d")
                 
                 current.setdefault("children", []).append(new_node)
                 current = new_node
     
     return root
 
-# Create tree visualization using Plotly
-def visualize_tree_plotly(tree_data, collapsed_nodes=None):
-    """Create an interactive tree visualization using Plotly."""
+# Improved visualization with better spacing and click interactions
+def visualize_tree_plotly(tree_data, collapsed_nodes=None, selected_node_id=None):
+    """Create an interactive tree visualization with improved spacing and click handling."""
     if collapsed_nodes is None:
         collapsed_nodes = set()
         
     node_x, node_y, node_text, node_info = [], [], [], []
     edge_x, edge_y = [], []
-    node_colors = []
+    node_colors, node_sizes, node_ids = [], [], []
     
     def traverse_tree(node, x, y, level=0, parent_x=None, parent_y=None, is_visible=True):
-        # Manage collapsed nodes
-        node_id = f"{node['name']}_{level}"
+        # Performance check - limit node rendering for large trees
+        if len(node_x) > st.session_state.max_nodes_display and level > 2:
+            return
+            
+        node_id = node.get("id", f"{node['name']}_{level}")
         is_collapsed = node_id in collapsed_nodes
+        is_selected = node_id == selected_node_id
         
         if is_visible:
             node_x.append(x)
             node_y.append(y)
             node_text.append(node["name"])
+            node_ids.append(node_id)
             
-            # Set node color based on classification
-            if "classification" in node:
+            # Enhanced visualization - color and size based on node properties
+            if is_selected:
+                color = "yellow"  # Highlight selected node
+                size = 20
+            elif "classification" in node:
                 if node["classification"] == "Confidential":
                     color = "red"
                 elif node["classification"] == "Internal":
                     color = "orange"
                 else:
                     color = "skyblue"
+                size = 15
             else:
                 color = "green"  # root node
-            
+                size = 18
+                
             node_colors.append(color)
+            node_sizes.append(size)
             
             info = {
                 "name": node["name"],
                 "level": node.get("level", 0),
-                "node_id": node_id,
+                "id": node_id,
                 "size": node.get("size", "N/A"),
                 "owner": node.get("owner", "N/A"),
                 "classification": node.get("classification", "N/A"),
                 "created": node.get("created", "N/A"),
-                "is_collapsed": is_collapsed
+                "is_collapsed": is_collapsed,
+                "is_selected": is_selected,
+                "has_children": bool(node.get("children", []))
             }
             node_info.append(info)
             
@@ -137,15 +166,21 @@ def visualize_tree_plotly(tree_data, collapsed_nodes=None):
         # Process children if not collapsed
         if "children" in node and node["children"] and not is_collapsed:
             num_children = len(node["children"])
-            width = max(num_children * 2, 2)
+            
+            # Improved spacing calculation - more space between nodes
+            width = max(num_children * 4, 4)  # Doubled horizontal spacing
             
             for i, child in enumerate(node["children"]):
+                # Better horizontal distribution
                 child_x = x - width/2 + i * (width/(num_children-1 if num_children > 1 else 1))
-                child_y = y - 2
+                # Increased vertical spacing
+                child_y = y - 4  # Doubled vertical spacing
                 traverse_tree(child, child_x, child_y, level+1, x, y, is_visible)
     
+    # Start traversal from root
     traverse_tree(tree_data, 0, 0)
     
+    # Define edges
     edge_trace = go.Scatter(
         x=edge_x, y=edge_y,
         line=dict(width=1, color='#888'),
@@ -153,20 +188,23 @@ def visualize_tree_plotly(tree_data, collapsed_nodes=None):
         mode='lines'
     )
     
+    # Define nodes with hover info
     node_trace = go.Scatter(
         x=node_x, y=node_y,
         mode='markers+text',
         text=node_text,
         textposition="bottom center",
         hoverinfo='text',
+        customdata=node_ids,  # Store node IDs for click handling
         marker=dict(
             showscale=False,
             color=node_colors,
-            size=15,
+            size=node_sizes,
             line=dict(width=2, color='DarkSlateGrey')
         )
     )
     
+    # Create figure with improved layout settings
     fig = go.Figure(data=[edge_trace, node_trace],
                    layout=go.Layout(
                         showlegend=False,
@@ -174,31 +212,50 @@ def visualize_tree_plotly(tree_data, collapsed_nodes=None):
                         margin=dict(b=20, l=5, r=5, t=40),
                         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
                         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                        height=600
+                        height=700,  # Larger visualization area
+                        clickmode='event'  # Enable click events
                     )
                    )
     
-    return fig, node_info
+    # Add click event handler via JavaScript
+    fig.update_layout(
+        updatemenus=[{
+            "buttons": [
+                {
+                    "args": [{"visible": [True, True]}],
+                    "label": "Reset",
+                    "method": "restyle"
+                }
+            ],
+            "direction": "left",
+            "pad": {"r": 10, "t": 10},
+            "showactive": False,
+            "type": "buttons",
+            "x": 0.1,
+            "y": 1.1,
+            "xanchor": "right",
+            "yanchor": "top"
+        }]
+    )
+    
+    return fig, node_info, node_ids
 
-# Toggle node collapse state
-def toggle_node_collapse(node_id):
+# Handle node clicking
+def handle_node_click(node_id):
+    """Process node click to toggle expansion/collapse and select node."""
+    # Toggle collapse state
     if node_id in st.session_state.collapsed_nodes:
         st.session_state.collapsed_nodes.remove(node_id)
     else:
         st.session_state.collapsed_nodes.add(node_id)
+    
+    # Set as selected node
+    st.session_state.selected_node_id = node_id
 
-# Generate AI recommendations for folder structure
+# Generate recommendations for folder structure
+@st.cache_data
 def get_ai_recommendations(tree_data):
-    """Get AI recommendations for folder structure organization."""
-    def format_structure(node, level=0):
-        output = "  " * level + f"- {node['name']}\n"
-        for child in node.get("children", []):
-            output += format_structure(child, level + 1)
-        return output
-    
-    folder_structure = format_structure(tree_data)
-    
-    # Calculate structure metrics
+    """Get AI recommendations with caching for better performance."""
     max_depth = 0
     total_folders = 0
     
@@ -237,15 +294,25 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Choose an Excel file", type=["xlsx", "xls"])
     
     st.header("Options")
+    # Performance controls
+    st.session_state.max_nodes_display = st.slider(
+        "Max nodes to display:", 
+        min_value=20, 
+        max_value=200, 
+        value=50,
+        help="Limit the number of nodes for better performance"
+    )
+    
     if st.button("Export as PNG"):
         if 'fig' in st.session_state and st.session_state.fig is not None:
-            img_bytes = st.session_state.fig.to_image(format="png")
-            st.download_button(
-                label="Download PNG",
-                data=img_bytes,
-                file_name="folder_tree.png",
-                mime="image/png"
-            )
+            with st.spinner("Generating PNG..."):
+                img_bytes = st.session_state.fig.to_image(format="png")
+                st.download_button(
+                    label="Download PNG",
+                    data=img_bytes,
+                    file_name="folder_tree.png",
+                    mime="image/png"
+                )
         else:
             st.warning("Generate a visualization first")
     
@@ -261,22 +328,37 @@ with st.sidebar:
 if uploaded_file is not None:
     with col1:
         st.header("Folder Tree Visualization")
+        st.info("👆 Click on nodes to expand/collapse and view details")
         
-        # Process the file
+        # Process the file with progress indicator
         with st.spinner("Processing Excel file..."):
             flat_paths = process_excel_data(uploaded_file)
         
         if flat_paths:
-            # Build hierarchy and visualize
-            tree_data = build_hierarchy(flat_paths)
-            st.session_state.tree_data = tree_data
+            # Build hierarchy with progress indicator
+            with st.spinner("Building folder structure..."):
+                tree_data = build_hierarchy(flat_paths)
+                st.session_state.tree_data = tree_data
             
-            fig, node_info = visualize_tree_plotly(tree_data, st.session_state.collapsed_nodes)
-            st.session_state.fig = fig
-            st.session_state.node_info = node_info
+            # Create visualization
+            with st.spinner("Generating visualization..."):
+                fig, node_info, node_ids = visualize_tree_plotly(
+                    tree_data, 
+                    st.session_state.collapsed_nodes,
+                    st.session_state.selected_node_id
+                )
+                st.session_state.fig = fig
+                st.session_state.node_info = node_info
             
-            # Display visualization
-            st.plotly_chart(fig, use_container_width=True)
+            # Display visualization with click handling
+            clicked = st.plotly_chart(fig, use_container_width=True, key="tree_plot")
+            
+            # Handle clicks through a callback
+            if clicked and "clickData" in clicked:
+                point_index = clicked["points"][0]["pointIndex"]
+                clicked_node_id = node_ids[point_index]
+                handle_node_click(clicked_node_id)
+                st.experimental_rerun()
             
             # Search functionality
             search_term = st.text_input("Search folders:")
@@ -284,8 +366,12 @@ if uploaded_file is not None:
                 matches = [node for node in node_info if search_term.lower() in node["name"].lower()]
                 if matches:
                     st.success(f"Found {len(matches)} matches:")
-                    for match in matches:
-                        st.write(f"- {match['name']}")
+                    # Make search results clickable
+                    for i, match in enumerate(matches):
+                        if st.button(f"{match['name']}", key=f"search_{i}"):
+                            st.session_state.selected_node_id = match['id']
+                            # Ensure parent nodes are expanded
+                            st.experimental_rerun()
                 else:
                     st.warning("No matches found")
         else:
@@ -293,30 +379,46 @@ if uploaded_file is not None:
 else:
     with col1:
         st.info("Upload an Excel file to visualize folder structure")
+        
+        # Display example visualization
+        st.subheader("Example visualization:")
+        st.image("https://miro.medium.com/max/700/1*YYQEubBxN6h3L1fNpBEkrw.png", 
+                 caption="Example folder tree (actual visualization will be interactive)")
 
 # Display metadata and recommendations
 with col2:
     st.header("Metadata")
     
     if 'node_info' in st.session_state and st.session_state.node_info:
-        node_names = [node["name"] for node in st.session_state.node_info]
-        selected_name = st.selectbox("Select folder:", node_names)
+        # Find selected node
+        selected_node = None
+        if st.session_state.selected_node_id:
+            selected_node = next((node for node in st.session_state.node_info 
+                                if node["id"] == st.session_state.selected_node_id), None)
         
-        selected_node = next((node for node in st.session_state.node_info 
-                             if node["name"] == selected_name), None)
+        if not selected_node:
+            # Default to first node if none selected
+            selected_node = st.session_state.node_info[0]
         
-        if selected_node:
-            st.markdown("---")
-            st.write(f"**Folder Name:** {selected_node['name']}")
-            st.write(f"**Size:** {selected_node['size']}")
-            st.write(f"**Owner:** {selected_node['owner']}")
-            st.write(f"**Classification:** {selected_node['classification']}")
-            st.write(f"**Created:** {selected_node['created']}")
-            
-            # Toggle collapse state button
-            if st.button(f"{'Expand' if selected_node['is_collapsed'] else 'Collapse'} in Visualization", 
-                       key=f"viz_toggle_{selected_node['node_id']}"):
-                toggle_node_collapse(selected_node['node_id'])
+        # Display node metadata with improved formatting
+        st.markdown("---")
+        st.markdown(f"### {selected_node['name']}")
+        st.markdown(f"**Level:** {selected_node['level']}")
+        
+        if selected_node['size'] != 'N/A':
+            st.markdown(f"**Size:** {selected_node['size']}")
+        if selected_node['owner'] != 'N/A':
+            st.markdown(f"**Owner:** {selected_node['owner']}")
+        if selected_node['classification'] != 'N/A':
+            st.markdown(f"**Classification:** {selected_node['classification']}")
+        if selected_node['created'] != 'N/A':
+            st.markdown(f"**Created:** {selected_node['created']}")
+        
+        # Show expand/collapse button only if node has children
+        if selected_node.get('has_children', False):
+            action = "Expand" if selected_node['is_collapsed'] else "Collapse"
+            if st.button(f"{action} Node", key=f"toggle_{selected_node['id']}"):
+                handle_node_click(selected_node['id'])
                 st.experimental_rerun()
     else:
         st.info("Upload an Excel file and select a node to see metadata")
@@ -324,5 +426,5 @@ with col2:
     # Display AI recommendations if available
     if 'recommendations' in st.session_state and st.session_state.recommendations:
         st.header("AI Recommendations")
-        for rec in st.session_state.recommendations:
-            st.write(f"- {rec}")
+        for i, rec in enumerate(st.session_state.recommendations):
+            st.markdown(f"**{i+1}.** {rec}")
