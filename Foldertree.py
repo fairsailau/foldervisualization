@@ -100,8 +100,7 @@ def create_graph_elements(folder_structure, parent_id=None, level=0):
             # Create edge from parent to this folder
             edges.append(Edge(
                 source=parent_id,
-                target=folder_id,
-                type="STRAIGHT"
+                target=folder_id
             ))
             
             # Process subfolders recursively if this node is expanded
@@ -149,28 +148,17 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Choose an Excel file", type=["xlsx", "xls"])
     
     st.header("Options")
-    physics_enabled = st.checkbox("Enable Physics", value=True, 
-                                help="Enable physics simulation for automatic layout")
-    
-    hierarchical_layout = st.checkbox("Hierarchical Layout", value=True,
-                                    help="Organize nodes in a hierarchical structure")
-    
-    direction = st.selectbox("Layout Direction", 
-                           options=["LR", "RL", "UD", "DU"],
-                           index=0,
-                           help="LR: Left to Right, RL: Right to Left, UD: Up to Down, DU: Down to Up")
-    
-    node_spacing = st.slider("Node Spacing", min_value=50, max_value=200, value=100,
-                           help="Control spacing between nodes")
-    
-    level_separation = st.slider("Level Separation", min_value=100, max_value=500, value=200,
-                               help="Control separation between hierarchical levels")
+    physics_enabled = st.checkbox("Enable Physics", value=True)
+    hierarchical_layout = st.checkbox("Hierarchical Layout", value=True)
+    direction = st.selectbox("Layout Direction", options=["LR", "RL", "UD", "DU"], index=0)
+    node_spacing = st.slider("Node Spacing", min_value=50, max_value=200, value=100)
+    level_separation = st.slider("Level Separation", min_value=100, max_value=500, value=200)
     
     # Reset button
     if st.button("Reset View"):
         st.session_state.expanded_nodes = set()
         st.session_state.selected_node = None
-        st.rerun()  # Using st.rerun() instead of experimental_rerun
+        st.rerun()
 
 # Main content area
 col1, col2 = st.columns([3, 1])
@@ -194,36 +182,29 @@ with col1:
                 # Create graph elements
                 nodes, edges = create_graph_elements(folder_structure)
                 
-                # Configure the graph
+                # Configure the graph - simplified configuration to avoid errors
                 config = Config(
                     width=800,
                     height=600,
                     directed=True,
                     physics=physics_enabled,
-                    hierarchical=hierarchical_layout,
-                    nodeHighlightBehavior=True,
-                    highlightColor="#F7A7A6",
-                    collapsible=True,
-                    node={'labelProperty': 'label'},
-                    link={'labelProperty': 'label', 'renderLabel': False},
-                    # Hierarchical layout configuration
-                    **{
-                        "hierarchy": {
-                            "enabled": hierarchical_layout,
-                            "direction": direction,
-                            "sortMethod": "directed",
-                            "nodeSpacing": node_spacing,
-                            "levelSeparation": level_separation
-                        }
-                    }
+                    hierarchical=hierarchical_layout
                 )
+                
+                # Add hierarchical configuration if enabled
+                if hierarchical_layout:
+                    config.hierarchical = {
+                        "enabled": True,
+                        "direction": direction,
+                        "sortMethod": "directed",
+                        "nodeSpacing": node_spacing,
+                        "levelSeparation": level_separation
+                    }
                 
                 # Render the graph
                 st.info("👆 Click on nodes to expand/collapse branches")
                 
-                clicked_node = agraph(nodes=nodes, 
-                                     edges=edges, 
-                                     config=config)
+                clicked_node = agraph(nodes=nodes, edges=edges, config=config)
                 
                 # Handle node clicks for expand/collapse
                 if clicked_node:
@@ -233,13 +214,9 @@ with col1:
                         st.session_state.expanded_nodes.add(clicked_node)
                     
                     st.session_state.selected_node = clicked_node
-                    st.rerun()  # Using st.rerun() instead of experimental_rerun
+                    st.rerun()
     else:
         st.info("Upload an Excel file to visualize your folder structure")
-        
-        # Example image
-        st.image("https://miro.medium.com/max/700/1*YYQEubBxN6h3L1fNpBEkrw.png", 
-                 caption="Example folder tree (actual visualization will be interactive) ")
 
 # Metadata panel
 with col2:
@@ -261,30 +238,29 @@ with col2:
             if is_expanded:
                 if st.button("Collapse Node"):
                     st.session_state.expanded_nodes.remove(st.session_state.selected_node)
-                    st.rerun()  # Using st.rerun() instead of experimental_rerun
+                    st.rerun()
             else:
                 if st.button("Expand Node"):
                     st.session_state.expanded_nodes.add(st.session_state.selected_node)
-                    st.rerun()  # Using st.rerun() instead of experimental_rerun
+                    st.rerun()
         
         with col_b:
             # Add button to expand one level (direct children only)
             if st.button("Expand One Level"):
-                if uploaded_file is not None:
-                    try:
-                        # Process the Excel file again to get the folder structure
-                        paths, _ = process_excel_data(uploaded_file)
-                        folder_structure, _ = build_folder_hierarchy(paths)
-                        
-                        # Get direct children of the selected node
-                        direct_children = get_direct_children(folder_structure, st.session_state.selected_node)
-                        
-                        # Add the selected node and its direct children to expanded_nodes
-                        st.session_state.expanded_nodes.add(st.session_state.selected_node)
-                        st.session_state.expanded_nodes.update(direct_children)
-                        
-                        st.rerun()  # Using st.rerun() instead of experimental_rerun
-                    except Exception as e:
-                        st.error(f"Error expanding children: {str(e)}")
+                try:
+                    # Process the Excel file again to get the folder structure
+                    paths, _ = process_excel_data(uploaded_file)
+                    folder_structure, _ = build_folder_hierarchy(paths)
+                    
+                    # Get direct children of the selected node
+                    direct_children = get_direct_children(folder_structure, st.session_state.selected_node)
+                    
+                    # Add the selected node and its direct children to expanded_nodes
+                    st.session_state.expanded_nodes.add(st.session_state.selected_node)
+                    st.session_state.expanded_nodes.update(direct_children)
+                    
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error expanding children: {str(e)}")
     else:
         st.info("Click on a node to view its details")
