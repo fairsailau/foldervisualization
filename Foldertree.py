@@ -112,23 +112,18 @@ def create_graph_elements(folder_structure, parent_id=None, level=0):
     
     return nodes, edges
 
-# Function to get all child nodes of a given node
-def get_all_children(folder_structure, node_id, prefix=""):
-    all_children = set()
+# Function to get direct children of a node
+def get_direct_children(folder_structure, node_id):
+    direct_children = set()
     
     if node_id == "root":
         # For root, all top-level folders are direct children
         for folder_name in folder_structure.keys():
             child_id = folder_name
-            all_children.add(child_id)
-            # Add children of this child recursively
-            for subfolder_name, subfolders in folder_structure[folder_name].items():
-                child_children = get_all_children({subfolder_name: subfolders}, child_id)
-                all_children.update(child_children)
+            direct_children.add(child_id)
     else:
         # Extract the folder name from the node_id
         parts = node_id.split('_')
-        folder_name = parts[-1]
         
         # Navigate to the correct level in the folder structure
         current_level = folder_structure
@@ -136,17 +131,14 @@ def get_all_children(folder_structure, node_id, prefix=""):
             if part in current_level:
                 current_level = current_level[part]
             else:
-                return all_children  # Return empty set if path not found
+                return direct_children  # Return empty set if path not found
         
         # Add all direct children
         for subfolder_name in current_level.keys():
             child_id = f"{node_id}_{subfolder_name}"
-            all_children.add(child_id)
-            # Add children of this child recursively
-            child_children = get_all_children(current_level, child_id, prefix=f"{node_id}_")
-            all_children.update(child_children)
+            direct_children.add(child_id)
     
-    return all_children
+    return direct_children
 
 # Main application layout
 st.title("Interactive Folder Tree Visualization")
@@ -178,7 +170,7 @@ with st.sidebar:
     if st.button("Reset View"):
         st.session_state.expanded_nodes = set()
         st.session_state.selected_node = None
-        st.experimental_rerun()
+        st.rerun()  # Using st.rerun() instead of experimental_rerun
 
 # Main content area
 col1, col2 = st.columns([3, 1])
@@ -241,7 +233,7 @@ with col1:
                         st.session_state.expanded_nodes.add(clicked_node)
                     
                     st.session_state.selected_node = clicked_node
-                    st.experimental_rerun()
+                    st.rerun()  # Using st.rerun() instead of experimental_rerun
     else:
         st.info("Upload an Excel file to visualize your folder structure")
         
@@ -269,27 +261,30 @@ with col2:
             if is_expanded:
                 if st.button("Collapse Node"):
                     st.session_state.expanded_nodes.remove(st.session_state.selected_node)
-                    st.experimental_rerun()
+                    st.rerun()  # Using st.rerun() instead of experimental_rerun
             else:
                 if st.button("Expand Node"):
                     st.session_state.expanded_nodes.add(st.session_state.selected_node)
-                    st.experimental_rerun()
+                    st.rerun()  # Using st.rerun() instead of experimental_rerun
         
         with col_b:
-            # Add button to expand all children
-            if st.button("Expand All Children"):
+            # Add button to expand one level (direct children only)
+            if st.button("Expand One Level"):
                 if uploaded_file is not None:
-                    # Process the Excel file again to get the folder structure
-                    paths, _ = process_excel_data(uploaded_file)
-                    folder_structure, _ = build_folder_hierarchy(paths)
-                    
-                    # Get all children of the selected node
-                    all_children = get_all_children(folder_structure, st.session_state.selected_node)
-                    
-                    # Add the selected node and all its children to expanded_nodes
-                    st.session_state.expanded_nodes.add(st.session_state.selected_node)
-                    st.session_state.expanded_nodes.update(all_children)
-                    
-                    st.experimental_rerun()
+                    try:
+                        # Process the Excel file again to get the folder structure
+                        paths, _ = process_excel_data(uploaded_file)
+                        folder_structure, _ = build_folder_hierarchy(paths)
+                        
+                        # Get direct children of the selected node
+                        direct_children = get_direct_children(folder_structure, st.session_state.selected_node)
+                        
+                        # Add the selected node and its direct children to expanded_nodes
+                        st.session_state.expanded_nodes.add(st.session_state.selected_node)
+                        st.session_state.expanded_nodes.update(direct_children)
+                        
+                        st.rerun()  # Using st.rerun() instead of experimental_rerun
+                    except Exception as e:
+                        st.error(f"Error expanding children: {str(e)}")
     else:
         st.info("Click on a node to view its details")
