@@ -26,6 +26,8 @@ if 'selected_node_id' not in st.session_state:
     st.session_state.selected_node_id = None
 if 'max_nodes_display' not in st.session_state:
     st.session_state.max_nodes_display = 50  # Limit nodes for performance
+if 'horizontal_layout' not in st.session_state:
+    st.session_state.horizontal_layout = True  # Default to horizontal layout
 
 # Cached Excel processing for better performance
 @st.cache_data
@@ -101,8 +103,8 @@ def build_hierarchy(paths):
     
     return root
 
-# Improved visualization with better spacing and click interactions
-def visualize_tree_plotly(tree_data, collapsed_nodes=None, selected_node_id=None):
+# Improved visualization with better spacing, click interactions, and horizontal layout
+def visualize_tree_plotly(tree_data, collapsed_nodes=None, selected_node_id=None, horizontal_layout=True):
     """Create an interactive tree visualization with improved spacing and click handling."""
     if collapsed_nodes is None:
         collapsed_nodes = set()
@@ -110,6 +112,11 @@ def visualize_tree_plotly(tree_data, collapsed_nodes=None, selected_node_id=None
     node_x, node_y, node_text, node_info = [], [], [], []
     edge_x, edge_y = [], []
     node_colors, node_sizes, node_ids = [], [], []
+    
+    # Initially collapse all nodes except root
+    if not collapsed_nodes and tree_data.get("id") not in collapsed_nodes:
+        for child in tree_data.get("children", []):
+            collapsed_nodes.add(child.get("id"))
     
     def traverse_tree(node, x, y, level=0, parent_x=None, parent_y=None, is_visible=True):
         # Performance check - limit node rendering for large trees
@@ -121,8 +128,14 @@ def visualize_tree_plotly(tree_data, collapsed_nodes=None, selected_node_id=None
         is_selected = node_id == selected_node_id
         
         if is_visible:
-            node_x.append(x)
-            node_y.append(y)
+            # For horizontal layout, swap x and y coordinates
+            if horizontal_layout:
+                node_x.append(y)  # y becomes x in horizontal layout
+                node_y.append(x)  # x becomes y in horizontal layout
+            else:
+                node_x.append(x)
+                node_y.append(y)
+                
             node_text.append(node["name"])
             node_ids.append(node_id)
             
@@ -145,6 +158,7 @@ def visualize_tree_plotly(tree_data, collapsed_nodes=None, selected_node_id=None
             node_colors.append(color)
             node_sizes.append(size)
             
+            # Store node information for display
             info = {
                 "name": node["name"],
                 "level": node.get("level", 0),
@@ -159,23 +173,43 @@ def visualize_tree_plotly(tree_data, collapsed_nodes=None, selected_node_id=None
             }
             node_info.append(info)
             
+            # Draw edges from parent to this node
             if parent_x is not None and parent_y is not None:
-                edge_x.extend([parent_x, x, None])
-                edge_y.extend([parent_y, y, None])
+                if horizontal_layout:
+                    edge_x.extend([parent_y, y, None])  # Swap for horizontal layout
+                    edge_y.extend([parent_x, x, None])
+                else:
+                    edge_x.extend([parent_x, x, None])
+                    edge_y.extend([parent_y, y, None])
         
         # Process children if not collapsed
         if "children" in node and node["children"] and not is_collapsed:
             num_children = len(node["children"])
             
             # Improved spacing calculation - more space between nodes
-            width = max(num_children * 4, 4)  # Doubled horizontal spacing
+            spacing_factor = 6  # Increased spacing between nodes
             
-            for i, child in enumerate(node["children"]):
-                # Better horizontal distribution
-                child_x = x - width/2 + i * (width/(num_children-1 if num_children > 1 else 1))
-                # Increased vertical spacing
-                child_y = y - 4  # Doubled vertical spacing
-                traverse_tree(child, child_x, child_y, level+1, x, y, is_visible)
+            if horizontal_layout:
+                # For horizontal layout, children expand to the right
+                for i, child in enumerate(node["children"]):
+                    # Horizontal layout: x increases (moves right), y varies for siblings
+                    child_x = x + spacing_factor  # Move right for children
+                    # Better vertical distribution for siblings
+                    if num_children > 1:
+                        child_y = y - (spacing_factor * (num_children-1)/2) + i * spacing_factor
+                    else:
+                        child_y = y
+                    traverse_tree(child, child_x, child_y, level+1, x, y, is_visible)
+            else:
+                # For vertical layout (top to bottom)
+                width = max(num_children * spacing_factor, spacing_factor)
+                
+                for i, child in enumerate(node["children"]):
+                    # Better horizontal distribution
+                    child_x = x - width/2 + i * (width/(num_children-1 if num_children > 1 else 1))
+                    # Increased vertical spacing
+                    child_y = y - spacing_factor  # Move down for children
+                    traverse_tree(child, child_x, child_y, level+1, x, y, is_visible)
     
     # Start traversal from root
     traverse_tree(tree_data, 0, 0)
@@ -193,7 +227,7 @@ def visualize_tree_plotly(tree_data, collapsed_nodes=None, selected_node_id=None
         x=node_x, y=node_y,
         mode='markers+text',
         text=node_text,
-        textposition="bottom center",
+        textposition="middle right" if horizontal_layout else "bottom center",
         hoverinfo='text',
         customdata=node_ids,  # Store node IDs for click handling
         marker=dict(
@@ -213,29 +247,15 @@ def visualize_tree_plotly(tree_data, collapsed_nodes=None, selected_node_id=None
                         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
                         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
                         height=700,  # Larger visualization area
+                        width=1000,  # Wider for horizontal layout
                         clickmode='event'  # Enable click events
                     )
                    )
     
-    # Add click event handler via JavaScript
+    # Add title indicating layout direction and interaction instructions
+    layout_direction = "Horizontal (Left to Right)" if horizontal_layout else "Vertical (Top to Bottom)"
     fig.update_layout(
-        updatemenus=[{
-            "buttons": [
-                {
-                    "args": [{"visible": [True, True]}],
-                    "label": "Reset",
-                    "method": "restyle"
-                }
-            ],
-            "direction": "left",
-            "pad": {"r": 10, "t": 10},
-            "showactive": False,
-            "type": "buttons",
-            "x": 0.1,
-            "y": 1.1,
-            "xanchor": "right",
-            "yanchor": "top"
-        }]
+        title=f"Folder Tree Visualization - {layout_direction}<br><sub>Click on nodes to expand/collapse</sub>"
     )
     
     return fig, node_info, node_ids
@@ -294,6 +314,13 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Choose an Excel file", type=["xlsx", "xls"])
     
     st.header("Options")
+    # Layout direction option
+    st.session_state.horizontal_layout = st.checkbox(
+        "Horizontal Layout (Left to Right)", 
+        value=True,
+        help="Toggle between horizontal (left to right) and vertical (top to bottom) layout"
+    )
+    
     # Performance controls
     st.session_state.max_nodes_display = st.slider(
         "Max nodes to display:", 
@@ -345,7 +372,8 @@ if uploaded_file is not None:
                 fig, node_info, node_ids = visualize_tree_plotly(
                     tree_data, 
                     st.session_state.collapsed_nodes,
-                    st.session_state.selected_node_id
+                    st.session_state.selected_node_id,
+                    st.session_state.horizontal_layout
                 )
                 st.session_state.fig = fig
                 st.session_state.node_info = node_info
@@ -414,17 +442,23 @@ with col2:
         if selected_node['created'] != 'N/A':
             st.markdown(f"**Created:** {selected_node['created']}")
         
-        # Show expand/collapse button only if node has children
-        if selected_node.get('has_children', False):
-            action = "Expand" if selected_node['is_collapsed'] else "Collapse"
-            if st.button(f"{action} Node", key=f"toggle_{selected_node['id']}"):
-                handle_node_click(selected_node['id'])
-                st.experimental_rerun()
-    else:
-        st.info("Upload an Excel file and select a node to see metadata")
+        # Show expand/collapse status
+        if selected_node['has_children']:
+            status = "Collapsed" if selected_node['is_collapsed'] else "Expanded"
+            st.markdown(f"**Status:** {status}")
+            
+            # Add button to expand/collapse
+            if selected_node['is_collapsed']:
+                if st.button("Expand Node"):
+                    st.session_state.collapsed_nodes.remove(selected_node['id'])
+                    st.experimental_rerun()
+            else:
+                if st.button("Collapse Node"):
+                    st.session_state.collapsed_nodes.add(selected_node['id'])
+                    st.experimental_rerun()
     
-    # Display AI recommendations if available
+    # Display recommendations if available
     if 'recommendations' in st.session_state and st.session_state.recommendations:
         st.header("AI Recommendations")
         for i, rec in enumerate(st.session_state.recommendations):
-            st.markdown(f"**{i+1}.** {rec}")
+            st.markdown(f"{i+1}. {rec}")
