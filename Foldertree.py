@@ -4,7 +4,6 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import io
 from PIL import Image
-import os
 
 # Page configuration
 st.set_page_config(
@@ -112,20 +111,59 @@ def get_direct_children(folder_structure, node_id):
     
     return direct_children
 
-# Function to draw the graph
+# Function to draw the graph without pygraphviz
 def draw_graph(G, direction="LR"):
     # Create a figure
     plt.figure(figsize=(12, 8))
     
-    # Use graphviz_layout for tree-like structure
-    if direction == "LR":
-        pos = nx.nx_agraph.graphviz_layout(G, prog="dot", args="-Grankdir=LR")
-    elif direction == "RL":
-        pos = nx.nx_agraph.graphviz_layout(G, prog="dot", args="-Grankdir=RL")
-    elif direction == "UD":
-        pos = nx.nx_agraph.graphviz_layout(G, prog="dot")
-    else:  # DU
-        pos = nx.nx_agraph.graphviz_layout(G, prog="dot", args="-Grankdir=BT")
+    # Use a different layout algorithm that doesn't require pygraphviz
+    if direction in ["LR", "RL"]:
+        # For horizontal layout, use a custom approach
+        pos = {}
+        
+        # First identify all levels in the tree
+        levels = {}
+        root = "root"
+        levels[root] = 0
+        
+        # BFS to assign levels
+        queue = [root]
+        while queue:
+            node = queue.pop(0)
+            level = levels[node]
+            
+            # Process children
+            for child in G.successors(node):
+                if child not in levels:
+                    levels[child] = level + 1
+                    queue.append(child)
+        
+        # Assign positions based on levels
+        nodes_by_level = {}
+        for node, level in levels.items():
+            if level not in nodes_by_level:
+                nodes_by_level[level] = []
+            nodes_by_level[level].append(node)
+        
+        # Assign x, y coordinates
+        for level, nodes in nodes_by_level.items():
+            for i, node in enumerate(nodes):
+                if direction == "LR":
+                    # Left to right layout
+                    pos[node] = (level, -i)
+                else:
+                    # Right to left layout
+                    pos[node] = (-level, -i)
+    else:
+        # For vertical layouts, use a simpler approach
+        if direction == "UD":
+            # Top to bottom
+            pos = nx.spring_layout(G, k=0.5, iterations=50)
+        else:
+            # Bottom to top
+            pos = nx.spring_layout(G, k=0.5, iterations=50)
+            # Flip y coordinates
+            pos = {node: (x, -y) for node, (x, y) in pos.items()}
     
     # Draw nodes
     nx.draw_networkx_nodes(G, pos, node_size=500, node_color='lightblue', alpha=0.8)
