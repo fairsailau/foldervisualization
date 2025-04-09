@@ -12,3 +12,4 @@ streamlit-agraph
 Image
 os
 io
+matplotlib.pyplot
