@@ -12,4 +12,5 @@ streamlit-agraph
 Image
 os
 io
-matplotlib-pyplot
+matplotlib
+pillow
