@@ -1,44 +1,25 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import networkx as nx
-import plotly.graph_objects as go
-from networkx.drawing.nx_pydot import graphviz_layout
-from datetime import datetime
-import os
-import traceback
+from streamlit_agraph import agraph, Node, Edge, Config
+import random
 
-# Page configuration with improved caching
+# Page configuration
 st.set_page_config(
-    page_title="Folder Tree Visualization",
+    page_title="Interactive Folder Tree Visualization",
     page_icon="🌳",
     layout="wide"
 )
 
-# Initialize session state
-if 'tree_data' not in st.session_state:
-    st.session_state.tree_data = None
-if 'node_info' not in st.session_state:
-    st.session_state.node_info = None
-if 'fig' not in st.session_state:
-    st.session_state.fig = None
-if 'recommendations' not in st.session_state:
-    st.session_state.recommendations = None
-if 'collapsed_nodes' not in st.session_state:
-    st.session_state.collapsed_nodes = set()
-if 'selected_node_id' not in st.session_state:
-    st.session_state.selected_node_id = None
-if 'max_nodes_display' not in st.session_state:
-    st.session_state.max_nodes_display = 50  # Limit nodes for performance
-if 'graph' not in st.session_state:
-    st.session_state.graph = None
-if 'error_message' not in st.session_state:
-    st.session_state.error_message = None
+# Initialize session state for expanded nodes
+if 'expanded_nodes' not in st.session_state:
+    st.session_state.expanded_nodes = set()
+if 'selected_node' not in st.session_state:
+    st.session_state.selected_node = None
+if 'node_colors' not in st.session_state:
+    st.session_state.node_colors = {}
 
-# Cached Excel processing for better performance
-@st.cache_data
+# Function to process Excel data
 def process_excel_data(file):
-    """Process Excel data into flat paths with caching for performance."""
     try:
         df = pd.read_excel(file)
         flat_paths = []
@@ -51,279 +32,124 @@ def process_excel_data(file):
         
         return flat_paths, None
     except Exception as e:
-        error_msg = f"Error processing Excel file: {str(e)}"
-        return [], error_msg
+        return [], f"Error processing Excel file: {str(e)}"
 
-# Build tree hierarchy
-def build_hierarchy(paths):
-    """Build tree hierarchy with efficient metadata generation."""
+# Function to build folder hierarchy
+def build_folder_hierarchy(paths):
     try:
-        # Create a directed graph
-        G = nx.DiGraph()
-        
-        # Add root node
-        root_id = "root"
-        G.add_node(root_id, name="Root", level=0, is_expanded=True)
-        
-        # Create timestamps for folders (just once)
-        now = datetime.now()
-        classifications = ["Public", "Internal", "Confidential"]
-        owners = ["User1", "User2", "Admin"]
-        
-        # Count paths for performance warning
-        if len(paths) > 100:
-            st.warning(f"Processing {len(paths)} paths may affect performance. Consider using a smaller dataset.")
+        # Create a dictionary to represent the folder structure
+        folder_structure = {}
         
         for path in paths:
             parts = path.split('/')
-            current_id = root_id
-            current_path = ""
+            current_level = folder_structure
             
             for i, part in enumerate(parts):
-                if not part.strip():
-                    continue
-                    
-                # Build the path up to this point
-                if current_path:
-                    current_path = f"{current_path}/{part}"
-                else:
-                    current_path = part
-                    
-                node_id = f"{current_path}"
+                if part not in current_level:
+                    current_level[part] = {}
                 
-                # Check if this node already exists
-                if not G.has_node(node_id):
-                    # Metadata only for leaf nodes to improve performance
-                    is_leaf = (i == len(parts) - 1)
-                    
-                    node_attrs = {
-                        "name": part, 
-                        "level": i + 1,
-                        "is_expanded": False  # Initially collapsed
-                    }
-                    
-                    # Only generate detailed metadata for leaf nodes
-                    if is_leaf:
-                        node_attrs["size"] = f"{np.random.randint(1, 1000)} KB"
-                        node_attrs["owner"] = np.random.choice(owners)
-                        node_attrs["classification"] = np.random.choice(classifications)
-                        node_attrs["created"] = (now - pd.Timedelta(days=np.random.randint(1, 365))).strftime("%Y-%m-%d")
-                    
-                    G.add_node(node_id, **node_attrs)
-                    G.add_edge(current_id, node_id)
-                
-                current_id = node_id
+                current_level = current_level[part]
         
-        return G, None
+        return folder_structure, None
     except Exception as e:
-        error_msg = f"Error building hierarchy: {str(e)}"
-        return None, error_msg
+        return {}, f"Error building folder hierarchy: {str(e)}"
 
-# Create a visualization of the tree using Plotly
-def visualize_tree_plotly(graph, collapsed_nodes=None, selected_node_id=None):
-    """Create an interactive tree visualization with improved spacing and click handling."""
-    try:
-        if collapsed_nodes is None:
-            collapsed_nodes = set()
+# Function to create nodes and edges from folder hierarchy
+def create_graph_elements(folder_structure, parent_id=None, level=0):
+    nodes = []
+    edges = []
+    
+    # Root node handling
+    if parent_id is None:
+        root_id = "root"
+        nodes.append(Node(
+            id=root_id,
+            label="Root",
+            size=25,
+            shape="circle",
+            color="#FF4500"  # Root node color
+        ))
+        parent_id = root_id
+    
+    # Process each folder in the current level
+    for folder_name, subfolders in folder_structure.items():
+        # Create a unique ID for this folder
+        folder_id = f"{parent_id}_{folder_name}" if parent_id != "root" else folder_name
         
-        # Create a subgraph with only the visible nodes based on collapsed state
-        visible_graph = nx.DiGraph()
+        # Check if this node should be visible based on expanded state
+        is_expanded = parent_id in st.session_state.expanded_nodes or parent_id == "root"
         
-        # Start with the root node
-        root_nodes = [n for n, d in graph.in_degree() if d == 0]
-        if not root_nodes:
-            return None, [], [], "No root node found in the graph"
-        
-        root_id = root_nodes[0]
-        visible_nodes = set([root_id])
-        
-        # Function to recursively add visible nodes
-        def add_visible_nodes(node_id):
-            if node_id in collapsed_nodes:
-                return
+        if is_expanded:
+            # Get or assign a color for this node
+            if folder_id not in st.session_state.node_colors:
+                # Generate a light blue color with slight variations
+                hue = 210 + random.randint(-15, 15)  # Blue with variation
+                saturation = 70 + random.randint(-10, 10)
+                lightness = 70 + random.randint(-10, 10)
+                st.session_state.node_colors[folder_id] = f"hsl({hue}, {saturation}%, {lightness}%)"
             
-            for child in graph.successors(node_id):
-                visible_nodes.add(child)
-                visible_graph.add_edge(node_id, child)
-                add_visible_nodes(child)
-        
-        # Add all visible nodes to the subgraph
-        for node in root_nodes:
-            add_visible_nodes(node)
-        
-        # Add all visible nodes to the subgraph
-        for node in visible_nodes:
-            attrs = {k: v for k, v in graph.nodes[node].items()}
-            visible_graph.add_node(node, **attrs)
-        
-        # Use graphviz_layout with dot to get a hierarchical layout
-        # The rankdir='LR' parameter makes the tree expand from left to right
-        try:
-            pos = graphviz_layout(visible_graph, prog="dot", root=root_id, args="-Grankdir=LR -Gnodesep=0.5 -Granksep=2.0")
-        except Exception as e:
-            st.warning(f"Graphviz layout error: {str(e)}. Using fallback layout.")
-            # Fallback to a simple layout
-            pos = {node: (i * 100, (visible_graph.nodes[node].get('level', 0) - 1) * -100) 
-                  for i, node in enumerate(visible_graph.nodes())}
-        
-        # Create edge traces
-        edge_x = []
-        edge_y = []
-        
-        for edge in visible_graph.edges():
-            x0, y0 = pos[edge[0]]
-            x1, y1 = pos[edge[1]]
-            edge_x.extend([x0, x1, None])
-            edge_y.extend([y0, y1, None])
-        
-        edge_trace = go.Scatter(
-            x=edge_x, y=edge_y,
-            line=dict(width=1, color='#888'),
-            hoverinfo='none',
-            mode='lines'
-        )
-        
-        # Create node traces
-        node_x = []
-        node_y = []
-        node_text = []
-        node_info = []
-        node_ids = []
-        node_colors = []
-        node_sizes = []
-        
-        for node in visible_graph.nodes():
-            x, y = pos[node]
-            node_x.append(x)
-            node_y.append(y)
+            # Create node for this folder
+            nodes.append(Node(
+                id=folder_id,
+                label=folder_name,
+                size=20,
+                shape="circle",
+                color=st.session_state.node_colors[folder_id]
+            ))
             
-            node_attrs = visible_graph.nodes[node]
-            node_name = node_attrs.get('name', str(node))
-            node_text.append(node_name)
-            node_ids.append(node)
+            # Create edge from parent to this folder
+            edges.append(Edge(
+                source=parent_id,
+                target=folder_id,
+                type="STRAIGHT"
+            ))
             
-            # Node color and size based on properties
-            is_selected = (node == selected_node_id)
-            has_children = any(visible_graph.successors(node))
-            is_collapsed = node in collapsed_nodes
-            
-            if is_selected:
-                color = "yellow"  # Highlight selected node
-                size = 20
-            elif "classification" in node_attrs:
-                if node_attrs["classification"] == "Confidential":
-                    color = "red"
-                elif node_attrs["classification"] == "Internal":
-                    color = "orange"
-                else:
-                    color = "skyblue"
-                size = 15
+            # Process subfolders recursively if this node is expanded
+            if folder_id in st.session_state.expanded_nodes:
+                sub_nodes, sub_edges = create_graph_elements(subfolders, folder_id, level + 1)
+                nodes.extend(sub_nodes)
+                edges.extend(sub_edges)
+    
+    return nodes, edges
+
+# Function to get all child nodes of a given node
+def get_all_children(folder_structure, node_id, prefix=""):
+    all_children = set()
+    
+    if node_id == "root":
+        # For root, all top-level folders are direct children
+        for folder_name in folder_structure.keys():
+            child_id = folder_name
+            all_children.add(child_id)
+            # Add children of this child recursively
+            for subfolder_name, subfolders in folder_structure[folder_name].items():
+                child_children = get_all_children({subfolder_name: subfolders}, child_id)
+                all_children.update(child_children)
+    else:
+        # Extract the folder name from the node_id
+        parts = node_id.split('_')
+        folder_name = parts[-1]
+        
+        # Navigate to the correct level in the folder structure
+        current_level = folder_structure
+        for part in parts[1:]:  # Skip the first part which is the parent
+            if part in current_level:
+                current_level = current_level[part]
             else:
-                color = "green"  # root node
-                size = 18
-                
-            node_colors.append(color)
-            node_sizes.append(size)
-            
-            # Store node information for display
-            info = {
-                "id": node,
-                "name": node_name,
-                "level": node_attrs.get("level", 0),
-                "size": node_attrs.get("size", "N/A"),
-                "owner": node_attrs.get("owner", "N/A"),
-                "classification": node_attrs.get("classification", "N/A"),
-                "created": node_attrs.get("created", "N/A"),
-                "is_collapsed": is_collapsed,
-                "is_selected": is_selected,
-                "has_children": has_children
-            }
-            node_info.append(info)
+                return all_children  # Return empty set if path not found
         
-        node_trace = go.Scatter(
-            x=node_x, y=node_y,
-            mode='markers+text',
-            text=node_text,
-            textposition="middle right",  # Text to the right of nodes for horizontal layout
-            hoverinfo='text',
-            customdata=node_ids,  # Store node IDs for click handling
-            marker=dict(
-                showscale=False,
-                color=node_colors,
-                size=node_sizes,
-                line=dict(width=2, color='DarkSlateGrey')
-            )
-        )
-        
-        # Create figure with improved layout settings
-        fig = go.Figure(data=[edge_trace, node_trace],
-                       layout=go.Layout(
-                            title="Folder Tree Visualization - Horizontal Layout<br><sub>Click on nodes to expand/collapse</sub>",
-                            showlegend=False,
-                            hovermode='closest',
-                            margin=dict(b=20, l=5, r=5, t=40),
-                            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                            height=700,  # Larger visualization area
-                            width=1000,  # Wider for horizontal layout
-                            clickmode='event'  # Enable click events
-                        )
-                       )
-        
-        return fig, node_info, node_ids, None
-    except Exception as e:
-        error_msg = f"Error visualizing tree: {str(e)}\n{traceback.format_exc()}"
-        return None, [], [], error_msg
-
-# Handle node clicking
-def handle_node_click(node_id):
-    """Process node click to toggle expansion/collapse and select node."""
-    try:
-        # Toggle collapse state
-        if node_id in st.session_state.collapsed_nodes:
-            st.session_state.collapsed_nodes.remove(node_id)
-        else:
-            st.session_state.collapsed_nodes.add(node_id)
-        
-        # Set as selected node
-        st.session_state.selected_node_id = node_id
-        return None
-    except Exception as e:
-        return f"Error handling node click: {str(e)}"
-
-# Generate recommendations for folder structure
-@st.cache_data
-def get_ai_recommendations(graph):
-    """Get AI recommendations with caching for better performance."""
-    try:
-        max_depth = 0
-        total_folders = 0
-        
-        for node, attrs in graph.nodes(data=True):
-            level = attrs.get('level', 0)
-            max_depth = max(max_depth, level)
-            total_folders += 1
-        
-        # Generate recommendations based on structure analysis
-        recommendations = [
-            f"Your folder structure has a maximum depth of {max_depth} levels. Consider keeping it under 5 levels for better navigation.",
-            "Group related files in dedicated subfolders for better organization.",
-            "Use a consistent naming convention for all folders (e.g., CamelCase or snake_case).",
-            "Include README files in each major section to explain the purpose and contents.",
-            "Separate work-in-progress from finalized content to avoid confusion.",
-            "Use classification tags consistently across similar content types."
-        ]
-        
-        return recommendations, None
-    except Exception as e:
-        error_msg = f"Error generating recommendations: {str(e)}"
-        return [], error_msg
+        # Add all direct children
+        for subfolder_name in current_level.keys():
+            child_id = f"{node_id}_{subfolder_name}"
+            all_children.add(child_id)
+            # Add children of this child recursively
+            child_children = get_all_children(current_level, child_id, prefix=f"{node_id}_")
+            all_children.update(child_children)
+    
+    return all_children
 
 # Main application layout
-st.title("Folder Tree Visualization")
-
-# Layout: Sidebar and main content
-col1, col2 = st.columns([3, 1])
+st.title("Interactive Folder Tree Visualization")
 
 # Sidebar for file upload and options
 with st.sidebar:
@@ -331,187 +157,139 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Choose an Excel file", type=["xlsx", "xls"])
     
     st.header("Options")
-    # Performance controls
-    st.session_state.max_nodes_display = st.slider(
-        "Max nodes to display:", 
-        min_value=20, 
-        max_value=200, 
-        value=50,
-        help="Limit the number of nodes for better performance"
-    )
+    physics_enabled = st.checkbox("Enable Physics", value=True, 
+                                help="Enable physics simulation for automatic layout")
     
-    if st.button("Export as PNG"):
-        if 'fig' in st.session_state and st.session_state.fig is not None:
-            try:
-                with st.spinner("Generating PNG..."):
-                    img_bytes = st.session_state.fig.to_image(format="png")
-                    st.download_button(
-                        label="Download PNG",
-                        data=img_bytes,
-                        file_name="folder_tree.png",
-                        mime="image/png"
-                    )
-            except Exception as e:
-                st.error(f"Error exporting PNG: {str(e)}")
-        else:
-            st.warning("Generate a visualization first")
+    hierarchical_layout = st.checkbox("Hierarchical Layout", value=True,
+                                    help="Organize nodes in a hierarchical structure")
     
-    if st.button("Get AI Recommendations"):
-        if 'graph' in st.session_state and st.session_state.graph:
-            with st.spinner("Analyzing folder structure..."):
-                recommendations, error = get_ai_recommendations(st.session_state.graph)
-                if error:
-                    st.error(error)
-                else:
-                    st.session_state.recommendations = recommendations
-        else:
-            st.warning("Generate a visualization first")
+    direction = st.selectbox("Layout Direction", 
+                           options=["LR", "RL", "UD", "DU"],
+                           index=0,
+                           help="LR: Left to Right, RL: Right to Left, UD: Up to Down, DU: Down to Up")
+    
+    node_spacing = st.slider("Node Spacing", min_value=50, max_value=200, value=100,
+                           help="Control spacing between nodes")
+    
+    level_separation = st.slider("Level Separation", min_value=100, max_value=500, value=200,
+                               help="Control separation between hierarchical levels")
+    
+    # Reset button
+    if st.button("Reset View"):
+        st.session_state.expanded_nodes = set()
+        st.session_state.selected_node = None
+        st.experimental_rerun()
 
-# Display any error message
-if st.session_state.error_message:
-    st.error(st.session_state.error_message)
-    st.session_state.error_message = None  # Clear the error after displaying
+# Main content area
+col1, col2 = st.columns([3, 1])
 
-# Process uploaded file
-if uploaded_file is not None:
-    with col1:
-        st.header("Folder Tree Visualization")
-        st.info("👆 Click on nodes to expand/collapse and view details")
+with col1:
+    if uploaded_file is not None:
+        # Process the Excel file
+        paths, error = process_excel_data(uploaded_file)
         
-        # Process the file with progress indicator
-        with st.spinner("Processing Excel file..."):
-            flat_paths, error = process_excel_data(uploaded_file)
+        if error:
+            st.error(error)
+        elif not paths:
+            st.warning("No valid folder paths found in the Excel file.")
+        else:
+            # Build folder hierarchy
+            folder_structure, error = build_folder_hierarchy(paths)
+            
             if error:
                 st.error(error)
-        
-        if flat_paths:
-            # Build hierarchy with progress indicator
-            with st.spinner("Building folder structure..."):
-                graph, error = build_hierarchy(flat_paths)
-                if error:
-                    st.error(error)
-                else:
-                    st.session_state.graph = graph
-                    
-                    # Initially collapse all nodes except root
-                    root_nodes = [n for n, d in graph.in_degree() if d == 0]
-                    if root_nodes:
-                        for node in graph.nodes():
-                            if node not in root_nodes:
-                                st.session_state.collapsed_nodes.add(node)
-            
-            if graph:
-                # Create visualization
-                with st.spinner("Generating visualization..."):
-                    fig, node_info, node_ids, error = visualize_tree_plotly(
-                        graph, 
-                        st.session_state.collapsed_nodes,
-                        st.session_state.selected_node_id
-                    )
-                    if error:
-                        st.error(error)
+            else:
+                # Create graph elements
+                nodes, edges = create_graph_elements(folder_structure)
+                
+                # Configure the graph
+                config = Config(
+                    width=800,
+                    height=600,
+                    directed=True,
+                    physics=physics_enabled,
+                    hierarchical=hierarchical_layout,
+                    nodeHighlightBehavior=True,
+                    highlightColor="#F7A7A6",
+                    collapsible=True,
+                    node={'labelProperty': 'label'},
+                    link={'labelProperty': 'label', 'renderLabel': False},
+                    # Hierarchical layout configuration
+                    **{
+                        "hierarchy": {
+                            "enabled": hierarchical_layout,
+                            "direction": direction,
+                            "sortMethod": "directed",
+                            "nodeSpacing": node_spacing,
+                            "levelSeparation": level_separation
+                        }
+                    }
+                )
+                
+                # Render the graph
+                st.info("👆 Click on nodes to expand/collapse branches")
+                
+                clicked_node = agraph(nodes=nodes, 
+                                     edges=edges, 
+                                     config=config)
+                
+                # Handle node clicks for expand/collapse
+                if clicked_node:
+                    if clicked_node in st.session_state.expanded_nodes:
+                        st.session_state.expanded_nodes.remove(clicked_node)
                     else:
-                        st.session_state.fig = fig
-                        st.session_state.node_info = node_info
-                
-                if fig:
-                    # Display visualization with click handling
-                    try:
-                        clicked = st.plotly_chart(fig, use_container_width=True, key="tree_plot")
-                        
-                        # Handle clicks through a callback
-                        if clicked and "clickData" in clicked:
-                            point_index = clicked["points"][0]["pointIndex"]
-                            clicked_node_id = node_ids[point_index]
-                            error = handle_node_click(clicked_node_id)
-                            if error:
-                                st.error(error)
-                            else:
-                                st.experimental_rerun()
-                    except Exception as e:
-                        st.error(f"Error displaying visualization: {str(e)}")
-                
-                # Search functionality
-                search_term = st.text_input("Search folders:")
-                if search_term:
-                    try:
-                        matches = [node for node in node_info if search_term.lower() in node["name"].lower()]
-                        if matches:
-                            st.success(f"Found {len(matches)} matches:")
-                            # Make search results clickable
-                            for i, match in enumerate(matches):
-                                if st.button(f"{match['name']}", key=f"search_{i}"):
-                                    st.session_state.selected_node_id = match['id']
-                                    # Ensure parent nodes are expanded
-                                    st.experimental_rerun()
-                        else:
-                            st.warning("No matches found")
-                    except Exception as e:
-                        st.error(f"Error searching: {str(e)}")
-        else:
-            if not error:  # Only show this if there's no other error
-                st.error("Could not extract folder paths from the Excel file.")
-else:
-    with col1:
-        st.info("Upload an Excel file to visualize folder structure")
+                        st.session_state.expanded_nodes.add(clicked_node)
+                    
+                    st.session_state.selected_node = clicked_node
+                    st.experimental_rerun()
+    else:
+        st.info("Upload an Excel file to visualize your folder structure")
         
-        # Display example visualization
-        st.subheader("Example visualization:")
+        # Example image
         st.image("https://miro.medium.com/max/700/1*YYQEubBxN6h3L1fNpBEkrw.png", 
-                 caption="Example folder tree (actual visualization will be interactive)")
+                 caption="Example folder tree (actual visualization will be interactive) ")
 
-# Display metadata and recommendations
+# Metadata panel
 with col2:
     st.header("Metadata")
     
-    if 'node_info' in st.session_state and st.session_state.node_info:
-        try:
-            # Find selected node
-            selected_node = None
-            if st.session_state.selected_node_id:
-                selected_node = next((node for node in st.session_state.node_info 
-                                    if node["id"] == st.session_state.selected_node_id), None)
-            
-            if not selected_node:
-                # Default to first node if none selected
-                selected_node = st.session_state.node_info[0]
-            
-            # Display node metadata with improved formatting
-            st.markdown("---")
-            st.markdown(f"### {selected_node['name']}")
-            st.markdown(f"**Level:** {selected_node['level']}")
-            
-            if selected_node['size'] != 'N/A':
-                st.markdown(f"**Size:** {selected_node['size']}")
-            if selected_node['owner'] != 'N/A':
-                st.markdown(f"**Owner:** {selected_node['owner']}")
-            if selected_node['classification'] != 'N/A':
-                st.markdown(f"**Classification:** {selected_node['classification']}")
-            if selected_node['created'] != 'N/A':
-                st.markdown(f"**Created:** {selected_node['created']}")
-            
-            # Show expand/collapse status
-            if selected_node['has_children']:
-                status = "Collapsed" if selected_node['is_collapsed'] else "Expanded"
-                st.markdown(f"**Status:** {status}")
-                
-                # Add button to expand/collapse
-                if selected_node['is_collapsed']:
-                    if st.button("Expand Node"):
-                        st.session_state.collapsed_nodes.remove(selected_node['id'])
-                        st.experimental_rerun()
-                else:
-                    if st.button("Collapse Node"):
-                        st.session_state.collapsed_nodes.add(selected_node['id'])
-                        st.experimental_rerun()
-        except Exception as e:
-            st.error(f"Error displaying metadata: {str(e)}")
-    
-    # Display recommendations if available
-    if 'recommendations' in st.session_state and st.session_state.recommendations:
-        try:
-            st.header("AI Recommendations")
-            for i, rec in enumerate(st.session_state.recommendations):
-                st.markdown(f"{i+1}. {rec}")
-        except Exception as e:
-            st.error(f"Error displaying recommendations: {str(e)}")
+    if st.session_state.selected_node:
+        st.markdown("---")
+        st.markdown(f"### Selected Node: {st.session_state.selected_node.split('_')[-1] if '_' in st.session_state.selected_node else st.session_state.selected_node}")
+        
+        # Display node status
+        is_expanded = st.session_state.selected_node in st.session_state.expanded_nodes
+        status = "Expanded" if is_expanded else "Collapsed"
+        st.markdown(f"**Status:** {status}")
+        
+        # Add buttons to expand/collapse
+        col_a, col_b = st.columns(2)
+        
+        with col_a:
+            if is_expanded:
+                if st.button("Collapse Node"):
+                    st.session_state.expanded_nodes.remove(st.session_state.selected_node)
+                    st.experimental_rerun()
+            else:
+                if st.button("Expand Node"):
+                    st.session_state.expanded_nodes.add(st.session_state.selected_node)
+                    st.experimental_rerun()
+        
+        with col_b:
+            # Add button to expand all children
+            if st.button("Expand All Children"):
+                if uploaded_file is not None:
+                    # Process the Excel file again to get the folder structure
+                    paths, _ = process_excel_data(uploaded_file)
+                    folder_structure, _ = build_folder_hierarchy(paths)
+                    
+                    # Get all children of the selected node
+                    all_children = get_all_children(folder_structure, st.session_state.selected_node)
+                    
+                    # Add the selected node and all its children to expanded_nodes
+                    st.session_state.expanded_nodes.add(st.session_state.selected_node)
+                    st.session_state.expanded_nodes.update(all_children)
+                    
+                    st.experimental_rerun()
+    else:
+        st.info("Click on a node to view its details")
