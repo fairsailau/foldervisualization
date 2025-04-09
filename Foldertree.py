@@ -1,9 +1,7 @@
 import streamlit as st
 import pandas as pd
-import networkx as nx
-import matplotlib.pyplot as plt
-import io
-from PIL import Image
+import plotly.graph_objects as go
+import json
 
 # Page configuration
 st.set_page_config(
@@ -54,137 +52,50 @@ def build_folder_hierarchy(paths):
     except Exception as e:
         return {}, f"Error building folder hierarchy: {str(e)}"
 
-# Function to create a NetworkX graph from folder hierarchy
-def create_graph(folder_structure, parent_id=None, level=0, max_depth=None):
-    G = nx.DiGraph()
-    
-    # Root node handling
-    if parent_id is None:
-        parent_id = "root"
-        G.add_node(parent_id, label="Root")
+# Function to convert folder structure to plotly treemap data
+def create_treemap_data(folder_structure, parent="", level=0, path=""):
+    labels = []
+    parents = []
+    values = []
+    ids = []
     
     # Process each folder in the current level
     for folder_name, subfolders in folder_structure.items():
         # Create a unique ID for this folder
-        folder_id = f"{parent_id}_{folder_name}" if parent_id != "root" else folder_name
+        folder_id = f"{path}/{folder_name}" if path else folder_name
         
-        # Check if this node should be visible based on expanded state
-        is_expanded = parent_id in st.session_state.expanded_nodes
+        # Add this folder to the data
+        labels.append(folder_name)
+        parents.append(parent)
+        values.append(1)  # All nodes have equal weight
+        ids.append(folder_id)
         
-        if is_expanded:
-            # Add node and edge
-            G.add_node(folder_id, label=folder_name)
-            G.add_edge(parent_id, folder_id)
-            
-            # Process subfolders recursively if this node is expanded and we haven't reached max depth
-            if folder_id in st.session_state.expanded_nodes and (max_depth is None or level < max_depth):
-                subgraph = create_graph(subfolders, folder_id, level + 1, max_depth)
-                G = nx.compose(G, subgraph)
+        # Process subfolders recursively
+        if subfolders:
+            sub_labels, sub_parents, sub_values, sub_ids = create_treemap_data(
+                subfolders, folder_name, level + 1, folder_id
+            )
+            labels.extend(sub_labels)
+            parents.extend(sub_parents)
+            values.extend(sub_values)
+            ids.extend(sub_ids)
     
-    return G
+    return labels, parents, values, ids
 
 # Function to get direct children of a node
 def get_direct_children(folder_structure, node_id):
-    direct_children = set()
+    parts = node_id.split('/')
+    current = folder_structure
     
-    if node_id == "root":
-        # For root, all top-level folders are direct children
-        for folder_name in folder_structure.keys():
-            child_id = folder_name
-            direct_children.add(child_id)
-    else:
-        # Extract the folder name from the node_id
-        parts = node_id.split('_')
-        
-        # Navigate to the correct level in the folder structure
-        current_level = folder_structure
-        for part in parts[1:]:  # Skip the first part which is the parent
-            if part in current_level:
-                current_level = current_level[part]
-            else:
-                return direct_children  # Return empty set if path not found
-        
-        # Add all direct children
-        for subfolder_name in current_level.keys():
-            child_id = f"{node_id}_{subfolder_name}"
-            direct_children.add(child_id)
-    
-    return direct_children
-
-# Function to draw the graph without pygraphviz
-def draw_graph(G, direction="LR"):
-    # Create a figure
-    plt.figure(figsize=(12, 8))
-    
-    # Use a different layout algorithm that doesn't require pygraphviz
-    if direction in ["LR", "RL"]:
-        # For horizontal layout, use a custom approach
-        pos = {}
-        
-        # First identify all levels in the tree
-        levels = {}
-        root = "root"
-        levels[root] = 0
-        
-        # BFS to assign levels
-        queue = [root]
-        while queue:
-            node = queue.pop(0)
-            level = levels[node]
-            
-            # Process children
-            for child in G.successors(node):
-                if child not in levels:
-                    levels[child] = level + 1
-                    queue.append(child)
-        
-        # Assign positions based on levels
-        nodes_by_level = {}
-        for node, level in levels.items():
-            if level not in nodes_by_level:
-                nodes_by_level[level] = []
-            nodes_by_level[level].append(node)
-        
-        # Assign x, y coordinates
-        for level, nodes in nodes_by_level.items():
-            for i, node in enumerate(nodes):
-                if direction == "LR":
-                    # Left to right layout
-                    pos[node] = (level, -i)
-                else:
-                    # Right to left layout
-                    pos[node] = (-level, -i)
-    else:
-        # For vertical layouts, use a simpler approach
-        if direction == "UD":
-            # Top to bottom
-            pos = nx.spring_layout(G, k=0.5, iterations=50)
+    # Navigate to the correct node
+    for part in parts:
+        if part in current:
+            current = current[part]
         else:
-            # Bottom to top
-            pos = nx.spring_layout(G, k=0.5, iterations=50)
-            # Flip y coordinates
-            pos = {node: (x, -y) for node, (x, y) in pos.items()}
+            return []
     
-    # Draw nodes
-    nx.draw_networkx_nodes(G, pos, node_size=500, node_color='lightblue', alpha=0.8)
-    
-    # Draw edges
-    nx.draw_networkx_edges(G, pos, arrows=True, arrowsize=15)
-    
-    # Draw labels
-    labels = {node: G.nodes[node].get('label', node) for node in G.nodes()}
-    nx.draw_networkx_labels(G, pos, labels=labels, font_size=10)
-    
-    plt.axis('off')
-    
-    # Save figure to a buffer
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', bbox_inches='tight', dpi=150)
-    buf.seek(0)
-    
-    # Convert buffer to image
-    img = Image.open(buf)
-    return img
+    # Return direct children
+    return list(current.keys())
 
 # Main application layout
 st.title("Interactive Folder Tree Visualization")
@@ -195,10 +106,8 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Choose an Excel file", type=["xlsx", "xls"])
     
     st.header("Options")
-    direction = st.selectbox("Layout Direction", 
-                           options=["LR", "RL", "UD", "DU"],
-                           index=0,
-                           help="LR: Left to Right, RL: Right to Left, UD: Up to Down, DU: Down to Up")
+    max_depth = st.slider("Max Display Depth", min_value=1, max_value=10, value=3,
+                         help="Maximum depth of folders to display")
     
     # Reset button
     if st.button("Reset View"):
@@ -225,23 +134,49 @@ with col1:
             if error:
                 st.error(error)
             else:
-                # Create graph
-                G = create_graph(folder_structure)
+                # Create treemap data
+                labels, parents, values, ids = create_treemap_data(folder_structure)
                 
-                # Draw graph
-                img = draw_graph(G, direction)
+                # Add root node
+                labels.insert(0, "Root")
+                parents.insert(0, "")
+                values.insert(0, 1)
+                ids.insert(0, "root")
                 
-                # Display the graph
-                st.info("👆 Click on a node in the metadata panel to expand/collapse it")
-                st.image(img, use_column_width=True)
+                # Create treemap figure
+                fig = go.Figure(go.Treemap(
+                    labels=labels,
+                    parents=parents,
+                    values=values,
+                    ids=ids,
+                    root_color="lightblue",
+                    branchvalues="total",
+                    maxdepth=max_depth,
+                    marker=dict(
+                        colors=['rgba(135, 206, 250, 0.8)'] * len(labels),
+                        line=dict(width=2, color='white')
+                    ),
+                    textfont=dict(size=14),
+                    hovertemplate='<b>%{label}</b><br>Path: %{id}<extra></extra>'
+                ))
                 
-                # Create a list of all nodes for selection
-                all_nodes = list(G.nodes())
+                # Update layout
+                fig.update_layout(
+                    margin=dict(t=30, l=10, r=10, b=10),
+                    height=600,
+                    width=800
+                )
+                
+                # Display the treemap
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Add click handler for node selection
+                st.info("👆 Click on a node in the treemap to select it")
                 
                 # Allow node selection via selectbox
-                selected_node = st.selectbox("Select a node to expand/collapse:", 
-                                           options=all_nodes,
-                                           format_func=lambda x: G.nodes[x].get('label', x) if x != 'root' else 'Root')
+                selected_node = st.selectbox("Select a node:", 
+                                           options=ids,
+                                           format_func=lambda x: x.split('/')[-1] if '/' in x else x)
                 
                 if selected_node:
                     st.session_state.selected_node = selected_node
@@ -257,50 +192,28 @@ with col2:
         node_id = st.session_state.selected_node
         
         # Get node label
-        if uploaded_file is not None:
-            G = create_graph(folder_structure)
-            node_label = G.nodes[node_id].get('label', node_id) if node_id != 'root' else 'Root'
-        else:
-            node_label = node_id.split('_')[-1] if '_' in node_id else node_id
+        node_label = node_id.split('/')[-1] if '/' in node_id else node_id
         
         st.markdown(f"### Selected Node: {node_label}")
+        st.markdown(f"**Path:** {node_id}")
         
-        # Display node status
-        is_expanded = node_id in st.session_state.expanded_nodes
-        status = "Expanded" if is_expanded else "Collapsed"
-        st.markdown(f"**Status:** {status}")
-        
-        # Add buttons to expand/collapse
-        col_a, col_b = st.columns(2)
-        
-        with col_a:
-            if is_expanded:
-                if st.button("Collapse Node"):
-                    st.session_state.expanded_nodes.remove(node_id)
-                    st.rerun()
-            else:
-                if st.button("Expand Node"):
-                    st.session_state.expanded_nodes.add(node_id)
-                    st.rerun()
-        
-        with col_b:
-            # Add button to expand one level (direct children only)
-            if st.button("Expand One Level"):
-                if uploaded_file is not None:
-                    try:
-                        # Process the Excel file again to get the folder structure
-                        paths, _ = process_excel_data(uploaded_file)
-                        folder_structure, _ = build_folder_hierarchy(paths)
-                        
-                        # Get direct children of the selected node
-                        direct_children = get_direct_children(folder_structure, node_id)
-                        
-                        # Add the selected node and its direct children to expanded_nodes
-                        st.session_state.expanded_nodes.add(node_id)
-                        st.session_state.expanded_nodes.update(direct_children)
-                        
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error expanding children: {str(e)}")
+        # Display children if available
+        if uploaded_file is not None:
+            try:
+                # Process the Excel file again to get the folder structure
+                paths, _ = process_excel_data(uploaded_file)
+                folder_structure, _ = build_folder_hierarchy(paths)
+                
+                # Get direct children
+                children = get_direct_children(folder_structure, node_id)
+                
+                if children:
+                    st.markdown("### Children:")
+                    for child in children:
+                        st.markdown(f"- {child}")
+                else:
+                    st.markdown("This node has no children.")
+            except Exception as e:
+                st.error(f"Error getting children: {str(e)}")
     else:
-        st.info("Select a node to view its details")
+        st.info("Click on a node to view its details")
