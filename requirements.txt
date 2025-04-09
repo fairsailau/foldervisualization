@@ -8,3 +8,4 @@ agraph
 Node
 Edge 
 Config
+streamlit-agraph
